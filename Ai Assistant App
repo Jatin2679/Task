@@ -1,0 +1,130 @@
+import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:samsung_health/samsung_health.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: HomeScreen(),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  @override
+  _HomeScreenState createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final TextEditingController _habitController = TextEditingController();
+  String selectedHabit = 'Water';
+  final List<String> habitOptions = ['Water', 'Food', 'Sleep', 'Study'];
+  SamsungHealth samsungHealth = SamsungHealth();
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeSamsungHealth();
+  }
+
+  void _initializeSamsungHealth() async {
+    bool authorized = await samsungHealth.connect();
+    if (authorized) {
+      _fetchSamsungHealthData();
+    }
+  }
+
+  void _fetchSamsungHealthData() async {
+    var sleepData = await samsungHealth.getSleep();
+    var waterData = await samsungHealth.getWater();
+    
+    if (sleepData.isNotEmpty) {
+      FirebaseFirestore.instance.collection('habits').add({
+        'name': 'Sleep',
+        'duration': sleepData.last['value'],
+        'timestamp': Timestamp.now(),
+      });
+    }
+    
+    if (waterData.isNotEmpty) {
+      FirebaseFirestore.instance.collection('habits').add({
+        'name': 'Water',
+        'amount': waterData.last['value'],
+        'timestamp': Timestamp.now(),
+      });
+    }
+  }
+
+  void _addHabit() {
+    if (selectedHabit.isNotEmpty) {
+      FirebaseFirestore.instance.collection('habits').add({
+        'name': selectedHabit,
+        'timestamp': Timestamp.now(),
+      });
+      _habitController.clear();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('AI Assistant')), 
+      body: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.all(16.0),
+            child: DropdownButtonFormField(
+              value: selectedHabit,
+              onChanged: (String? newValue) {
+                setState(() {
+                  selectedHabit = newValue!;
+                });
+              },
+              items: habitOptions.map((String habit) {
+                return DropdownMenuItem(
+                  value: habit,
+                  child: Text(habit),
+                );
+              }).toList(),
+              decoration: InputDecoration(
+                labelText: 'Select Habit',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: _addHabit, 
+            child: Text('Log Habit'),
+          ),
+          Expanded(
+            child: StreamBuilder(
+              stream: FirebaseFirestore.instance.collection('habits').snapshots(),
+              builder: (context, AsyncSnapshot<QuerySnapshot> snapshot) {
+                if (!snapshot.hasData) {
+                  return Center(child: CircularProgressIndicator());
+                }
+                return ListView(
+                  children: snapshot.data!.docs.map((doc) {
+                    return ListTile(
+                      title: Text(doc['name']),
+                      subtitle: Text(doc['timestamp'].toDate().toString()),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
