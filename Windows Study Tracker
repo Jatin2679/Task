@@ -1,0 +1,181 @@
+import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:samsung_health/samsung_health.dart';
+import 'dart:async';
+import 'package:collection/collection.dart';
+import 'package:intl/intl.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        textTheme: TextTheme(
+          bodyText1: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+          bodyText2: TextStyle(fontSize: 14, color: Colors.grey[600]),
+        ),
+      ),
+      home: HomeScreen(),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  @override
+  _HomeScreenState createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final TextEditingController _habitController = TextEditingController();
+  String selectedHabit = 'Water';
+  final List<String> habitOptions = ['Water', 'Food', 'Sleep', 'Study'];
+  SamsungHealth samsungHealth = SamsungHealth();
+  FlutterLocalNotificationsPlugin notificationsPlugin = FlutterLocalNotificationsPlugin();
+  Map<String, int> habitStreaks = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeSamsungHealth();
+    _initializeNotifications();
+    _scheduleDailyReminders();
+    _calculateHabitStreaks();
+  }
+
+  void _initializeSamsungHealth() async {
+    bool authorized = await samsungHealth.connect();
+    if (authorized) {
+      Timer.periodic(Duration(minutes: 30), (timer) {
+        _fetchSamsungHealthData();
+      });
+    }
+  }
+
+  void _fetchSamsungHealthData() async {
+    try {
+      var sleepData = await samsungHealth.getSleep();
+      var waterData = await samsungHealth.getWater();
+      
+      if (sleepData.isNotEmpty) {
+        FirebaseFirestore.instance.collection('habits').add({
+          'name': 'Sleep',
+          'duration': sleepData.last['value'],
+          'timestamp': Timestamp.now(),
+        });
+      }
+      
+      if (waterData.isNotEmpty) {
+        FirebaseFirestore.instance.collection('habits').add({
+          'name': 'Water',
+          'amount': waterData.last['value'],
+          'timestamp': Timestamp.now(),
+        });
+      }
+    } catch (e) {
+      print("Error fetching Samsung Health data: $e");
+    }
+  }
+
+  void _calculateHabitStreaks() async {
+    QuerySnapshot snapshot = await FirebaseFirestore.instance.collection('habits').get();
+    Map<String, int> streaks = {};
+    
+    for (var habit in habitOptions) {
+      List<Timestamp> habitDates = snapshot.docs
+          .where((doc) => doc['name'] == habit)
+          .map((doc) => doc['timestamp'] as Timestamp)
+          .toList();
+      
+      habitDates.sort((a, b) => a.toDate().compareTo(b.toDate()));
+      int streak = 0;
+      for (int i = 0; i < habitDates.length; i++) {
+        if (i == 0 || habitDates[i].toDate().difference(habitDates[i - 1].toDate()).inDays == 1) {
+          streak++;
+        } else {
+          streak = 1;
+        }
+      }
+      streaks[habit] = streak;
+    }
+    setState(() {
+      habitStreaks = streaks;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('AI Habit Assistant')), 
+      body: Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            DropdownButtonFormField(
+              value: selectedHabit,
+              onChanged: (String? newValue) {
+                setState(() {
+                  selectedHabit = newValue!;
+                });
+              },
+              items: habitOptions.map((String habit) {
+                return DropdownMenuItem(
+                  value: habit,
+                  child: Text(habit),
+                );
+              }).toList(),
+              decoration: InputDecoration(
+                labelText: 'Select Habit',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () {
+                FirebaseFirestore.instance.collection('habits').add({
+                  'name': selectedHabit,
+                  'timestamp': Timestamp.now(),
+                });
+                _calculateHabitStreaks();
+              }, 
+              child: Text('Log Habit'),
+            ),
+            SizedBox(height: 10),
+            Expanded(
+              child: StreamBuilder(
+                stream: FirebaseFirestore.instance.collection('habits').snapshots(),
+                builder: (context, AsyncSnapshot<QuerySnapshot> snapshot) {
+                  if (!snapshot.hasData) {
+                    return Center(child: CircularProgressIndicator());
+                  }
+                  return ListView(
+                    children: snapshot.data!.docs.map((doc) {
+                      return Card(
+                        margin: EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        child: ListTile(
+                          title: Text(doc['name'], style: TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text("Logged on: " + DateFormat('yyyy-MM-dd').format(doc['timestamp'].toDate())),
+                          trailing: Text("🔥 Streak: ${habitStreaks[doc['name']] ?? 0} days"),
+                        ),
+                      );
+                    }).toList(),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
